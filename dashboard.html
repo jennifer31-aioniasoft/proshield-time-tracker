@@ -1,0 +1,189 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ProShield — Team Hours Dashboard</title>
+<style>
+  :root{--ink:#16233A;--muted:#64708A;--line:#E4E8EF;--bg:#F4F6F9;--green:#1C5299;--card:#fff;}
+  *{box-sizing:border-box}
+  body{margin:0;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;background:var(--bg);color:var(--ink);font-variant-numeric:tabular-nums;}
+  .wrap{max-width:1000px;margin:0 auto;padding:24px 18px 56px;}
+  h1{font-size:23px;font-weight:700;letter-spacing:-.02em;margin:0;}
+  .sub{color:var(--muted);font-size:14px;margin-top:2px;}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:16px;}
+  label{display:block;font-size:13px;color:var(--muted);margin-bottom:6px;}
+  input,select{width:100%;font-size:16px;border:1px solid var(--line);border-radius:10px;padding:11px;background:#fff;color:var(--ink);outline:none;}
+  input:focus,select:focus{border-color:var(--green);}
+  button{border:0;border-radius:10px;font-size:15px;font-weight:600;padding:12px 16px;cursor:pointer;color:#fff;background:var(--green);}
+  button.ghost{background:#fff;color:var(--ink);border:1px solid var(--line);}
+  .err{color:#E4574C;font-size:13px;margin-top:8px;}
+  .kpis{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:12px;margin-top:16px;}
+  .tot .k{font-size:13px;color:var(--muted);} .tot .v{font-size:26px;font-weight:700;margin-top:4px;} .tot .s{font-size:12px;color:#8A94A6;margin-top:2px;}
+  .row{display:grid;grid-template-columns:2fr 1fr;gap:12px;margin-top:12px;}
+  @media(max-width:760px){.row{grid-template-columns:1fr;}}
+  table{width:100%;border-collapse:collapse;font-size:14px;min-width:520px;}
+  th,td{padding:8px 10px;} th{color:var(--muted);font-weight:600;font-size:12px;text-align:center;} th:first-child,td:first-child{text-align:left;}
+  .panel-title{font-size:13px;color:var(--muted);margin-bottom:10px;}
+  .hide{display:none;}
+  .bar{height:8px;background:#EEF1F5;border-radius:999px;overflow:hidden;} .bar>span{display:block;height:100%;border-radius:999px;}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div style="display:flex;justify-content:space-between;align-items:flex-end;flex-wrap:wrap;gap:12px">
+    <div><h1>Team hours</h1><div class="sub">Monthly overview, by week per person.</div></div>
+    <div style="display:flex;gap:8px;align-items:center">
+      <select id="month" class="hide" style="width:auto"></select>
+      <button id="exportBtn" class="ghost hide">Export CSV</button>
+      <button id="signOut" class="ghost hide">Sign out</button>
+    </div>
+  </div>
+
+  <div id="login" class="card hide" style="max-width:380px;margin-top:20px">
+    <div class="panel-title">Manager sign in</div>
+    <label>Email</label>
+    <input id="email" type="email" autocomplete="email">
+    <label style="margin-top:12px">Password</label>
+    <input id="pass" type="password" autocomplete="current-password">
+    <div style="margin-top:14px"><button id="loginBtn" style="width:100%">Sign in</button></div>
+    <div id="loginErr" class="err"></div>
+  </div>
+
+  <div id="notmgr" class="card hide" style="margin-top:20px">
+    This dashboard is for managers. Your account isn't set as a manager.
+    <div style="margin-top:12px"><button id="signOut2" class="ghost">Sign out</button></div>
+  </div>
+
+  <div id="board" class="hide">
+    <div class="kpis" id="kpis"></div>
+    <div class="row">
+      <div class="card"><div class="panel-title">Hours by week, split by person</div><canvas id="chart" height="150"></canvas></div>
+      <div class="card"><div class="panel-title">Total by person</div><div id="ranking"></div></div>
+    </div>
+    <div class="card" style="margin-top:12px">
+      <div class="panel-title">Hours per person, by week</div>
+      <div style="overflow-x:auto"><table id="matrix"></table></div>
+    </div>
+    <div id="empty" class="card hide" style="margin-top:12px;color:var(--muted)">No completed sessions yet this month. Once the team clocks time, it shows up here.</div>
+  </div>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.3/chart.umd.min.js"></script>
+<script>
+  var SUPABASE_URL = 'https://osacsudawfoukxujelkw.supabase.co';
+  var SUPABASE_ANON_KEY = 'sb_publishable_980hVYMs0aQh0BzEf81Hpw__Qrol1rc';
+  var sb = supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+  var COLORS = ['#12876A','#4C6EF5','#E8A13A','#E15C71','#8B5CF6','#5C7A99'];
+  var WEEKS = ['W1','W2','W3','W4','W5'];
+  function $(id){return document.getElementById(id);}
+  function r1(n){return Math.round(n*10)/10;}
+  function esc(t){return String(t==null?'':t).replace(/[&<>"']/g,function(c){return{'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c];});}
+  function show(id){['login','notmgr','board'].forEach(function(x){$(x).classList.add('hide');});$(id).classList.remove('hide');}
+
+  var months={}, chart=null, order=[];
+
+  sb.auth.getSession().then(function(r){route(r.data.session);});
+  sb.auth.onAuthStateChange(function(_e,s){route(s);});
+  $('loginBtn').onclick=function(){
+    $('loginErr').textContent='';$('loginBtn').disabled=true;
+    sb.auth.signInWithPassword({email:$('email').value.trim(),password:$('pass').value})
+      .then(function(r){$('loginBtn').disabled=false;if(r.error)$('loginErr').textContent=r.error.message;})
+      .catch(function(){$('loginBtn').disabled=false;$('loginErr').textContent='Sign-in failed.';});
+  };
+  $('signOut').onclick=$('signOut2').onclick=function(){sb.auth.signOut();};
+
+  function route(session){
+    if(!session||!session.user){show('login');chrome(false);return;}
+    sb.from('profiles').select('is_manager').eq('id',session.user.id).single().then(function(r){
+      if(r.data&&r.data.is_manager){chrome(true);load();}else{show('notmgr');chrome(false);}
+    });
+  }
+  function chrome(on){['month','exportBtn','signOut'].forEach(function(id){$(id).classList.toggle('hide',!on);});}
+
+  function load(){
+    sb.from('sessions').select('clock_in,clock_out,profiles(full_name)').then(function(r){
+      if(r.error){show('login');$('loginErr').textContent=r.error.message;return;}
+      months={};
+      (r.data||[]).forEach(function(s){
+        if(!s.clock_out)return;
+        var d=new Date(s.clock_in);
+        var key=d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0');
+        var label=d.toLocaleDateString(undefined,{month:'long',year:'numeric'});
+        var wi=Math.min(4,Math.ceil(d.getDate()/7)-1);
+        var name=(s.profiles&&s.profiles.full_name)||'Unknown';
+        var hrs=(new Date(s.clock_out)-d)/3600000;
+        if(!months[key])months[key]={label:label,people:{}};
+        if(!months[key].people[name])months[key].people[name]=[0,0,0,0,0];
+        months[key].people[name][wi]+=hrs;
+      });
+      order=Object.keys(months).sort(function(a,b){return a<b?1:-1;});
+      var sel=$('month');sel.innerHTML='';
+      order.forEach(function(k){var o=document.createElement('option');o.value=k;o.textContent=months[k].label;sel.appendChild(o);});
+      sel.onchange=render;
+      show('board');
+      if(!order.length){$('empty').classList.remove('hide');$('kpis').innerHTML='';$('ranking').innerHTML='';$('matrix').innerHTML='';if(chart){chart.destroy();chart=null;}return;}
+      $('empty').classList.add('hide');
+      render();
+    });
+  }
+
+  function render(){
+    var key=$('month').value||order[0];
+    var people=months[key].people;
+    var names=Object.keys(people).sort();
+    var colorOf={};names.forEach(function(n,i){colorOf[n]=COLORS[i%COLORS.length];});
+
+    var totals=names.map(function(n){return {name:n,total:people[n].reduce(function(a,b){return a+b;},0),color:colorOf[n]};})
+      .sort(function(a,b){return b.total-a.total;});
+    var grand=totals.reduce(function(s,p){return s+p.total;},0);
+    var weekTotals=WEEKS.map(function(_,i){return names.reduce(function(s,n){return s+people[n][i];},0);});
+    var busiestIdx=weekTotals.indexOf(Math.max.apply(null,weekTotals));
+
+    $('kpis').innerHTML=[
+      ['Total hours',r1(grand),months[key].label],
+      ['Team members',names.length,'tracked time'],
+      ['Avg per person',(names.length?r1(grand/names.length):0)+'h','this month'],
+      ['Busiest week',WEEKS[busiestIdx],r1(weekTotals[busiestIdx])+'h logged']
+    ].map(function(t,i){return '<div class="card tot"><div class="k">'+t[0]+'</div><div class="v" style="color:'+(i===0?'#1C5299':'#16233A')+'">'+t[1]+'</div><div class="s">'+t[2]+'</div></div>';}).join('');
+
+    if(chart)chart.destroy();
+    chart=new Chart($('chart').getContext('2d'),{
+      type:'bar',
+      data:{labels:WEEKS,datasets:names.map(function(n){return {label:n,data:people[n].map(r1),backgroundColor:colorOf[n],stack:'a',borderWidth:0};})},
+      options:{responsive:true,plugins:{legend:{labels:{boxWidth:12,font:{size:12}}}},scales:{x:{stacked:true,grid:{display:false}},y:{stacked:true,ticks:{precision:0}}}}
+    });
+
+    $('ranking').innerHTML=totals.map(function(p){
+      var pct=totals[0].total?Math.round(p.total/totals[0].total*100):0;
+      return '<div style="margin-bottom:10px"><div style="display:flex;justify-content:space-between;font-size:13px;margin-bottom:4px"><span>'+esc(p.name)+'</span><span style="font-weight:600">'+r1(p.total)+'h</span></div><div class="bar"><span style="width:'+pct+'%;background:'+p.color+'"></span></div></div>';
+    }).join('') || '<div style="color:var(--muted);font-size:13px">No data.</div>';
+
+    var maxCell=Math.max.apply(null,names.flatMap?names.flatMap(function(n){return people[n];}):[].concat.apply([],names.map(function(n){return people[n];})));
+    if(!isFinite(maxCell)||maxCell<=0)maxCell=1;
+    var head='<thead><tr><th>Name</th>'+WEEKS.map(function(w){return '<th>'+w+'</th>';}).join('')+'<th style="text-align:right">Total</th></tr></thead>';
+    var body=names.map(function(n){
+      var tot=people[n].reduce(function(a,b){return a+b;},0);
+      return '<tr style="border-top:1px solid #EEF1F5"><td><span style="display:inline-block;width:8px;height:8px;border-radius:999px;background:'+colorOf[n]+';margin-right:8px"></span>'+esc(n)+'</td>'+
+        people[n].map(function(v){return '<td style="background:rgba(28,82,153,'+(v?0.06+0.55*(v/maxCell):0)+')">'+(v?r1(v):'—')+'</td>';}).join('')+
+        '<td style="text-align:right;font-weight:700">'+r1(tot)+'</td></tr>';
+    }).join('');
+    var foot='<tr style="border-top:2px solid #E4E8EF"><td style="font-weight:600;color:var(--muted)">Weekly total</td>'+
+      weekTotals.map(function(v){return '<td style="font-weight:600;text-align:center">'+r1(v)+'</td>';}).join('')+
+      '<td style="text-align:right;font-weight:700;color:#1C5299">'+r1(grand)+'</td></tr>';
+    $('matrix').innerHTML=head+'<tbody>'+body+foot+'</tbody>';
+  }
+
+  $('exportBtn').onclick=function(){
+    var key=$('month').value||order[0];if(!key)return;
+    var people=months[key].people;var names=Object.keys(people).sort();
+    var lines=[['Name'].concat(WEEKS).concat(['Total']).join(',')];
+    names.forEach(function(n){var tot=people[n].reduce(function(a,b){return a+b;},0);
+      lines.push([n].concat(people[n].map(r1)).concat([r1(tot)]).join(','));});
+    var blob=new Blob([lines.join('\n')],{type:'text/csv'});var a=document.createElement('a');
+    a.href=URL.createObjectURL(blob);a.download='team-hours-'+key+'.csv';a.click();
+  };
+</script>
+</body>
+</html>
