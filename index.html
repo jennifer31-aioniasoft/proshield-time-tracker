@@ -27,6 +27,9 @@
   button:disabled{opacity:.6}
   .btn-green{background:var(--green)} .btn-green:active{background:var(--green-d)}
   .btn-red{background:var(--red)}
+  .btn-outline{background:#fff;color:var(--green-d);border:1px solid var(--line)}
+  .tag.paused{background:#FDF1E3;color:#B4690E}
+  .timer.paused{color:var(--muted)}
   .btn-ghost{background:transparent;color:var(--muted);font-weight:500;font-size:14px;padding:12px;width:auto}
   .link{background:none;color:var(--green-d);font-weight:600;font-size:14px;width:auto;padding:8px}
   .center{text-align:center}
@@ -103,14 +106,15 @@
           <div style="margin:16px 0 4px"><button class="btn-green" id="startBtn">Start work</button></div>
         </div>
         <div id="onState" class="hide">
-          <div class="tag">On the clock</div>
+          <div class="tag" id="clockTag">On the clock</div>
           <div class="timer mono" id="timer">00:00:00</div>
           <div class="sub" id="startedAt"></div>
+          <div style="margin-top:16px"><button class="btn-outline" id="pauseBtn">Pause</button></div>
           <div id="didWrap" class="hide" style="margin-top:16px;text-align:left">
             <label>What did you work on?</label>
             <textarea id="didInp" rows="3" placeholder="e.g. Client onboarding calls, drafted the weekly report"></textarea>
           </div>
-          <div style="margin-top:14px"><button class="btn-red" id="stopBtn">Stop work</button></div>
+          <div style="margin-top:10px"><button class="btn-red" id="stopBtn">Stop work</button></div>
         </div>
         <div id="mainErr" class="err"></div>
       </div>
@@ -169,6 +173,10 @@
     h=h%12;if(h===0)h=12;return h+':'+(m<10?'0':'')+m+' '+ap;}
   function esc(t){return String(t==null?'':t).replace(/[&<>"']/g,function(c){
     return{'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c];});}
+  // Worked time for a session = elapsed minus paused time (finished pauses in paused_ms, plus a pause in progress).
+  function pausedMs(s,end){return (s.paused_ms||0)+(s.paused_at?Math.max(0,end-new Date(s.paused_at).getTime()):0);}
+  function workedMs(s){var end=s.clock_out?new Date(s.clock_out).getTime():Date.now();
+    return Math.max(0,end-new Date(s.clock_in).getTime()-pausedMs(s,end));}
   function showScreen(id){['auth','app'].forEach(function(x){$(x).classList.add('hide');});$(id).classList.remove('hide');}
 
   var me=null, profile=null, active=null, tick=null;
@@ -293,7 +301,7 @@
         var today=ymd(new Date()),ws=weekStartLocal(),todayH=0,weekH=0,recent=[];
         rows.forEach(function(x){
           if(!x.clock_out)return;
-          var h=(new Date(x.clock_out)-new Date(x.clock_in))/3600000;
+          var h=workedMs(x)/3600000;
           if(ymd(new Date(x.clock_in))===today)todayH+=h;
           if(new Date(x.clock_in).getTime()>=ws)weekH+=h;
           recent.push(x);
@@ -308,9 +316,14 @@
     if(active){
       $('offState').classList.add('hide');$('onState').classList.remove('hide');
       $('didWrap').classList.add('hide');$('stopBtn').textContent='Stop work';
-      $('startedAt').textContent='Started at '+clock(active.clock_in);
-      var t0=new Date(active.clock_in).getTime();
-      var upd=function(){$('timer').textContent=hms(Date.now()-t0);};upd();tick=setInterval(upd,1000);
+      var paused=!!active.paused_at;
+      $('clockTag').textContent=paused?'Paused':'On the clock';
+      $('clockTag').classList.toggle('paused',paused);
+      $('timer').classList.toggle('paused',paused);
+      $('pauseBtn').textContent=paused?'Resume':'Pause';
+      $('startedAt').textContent='Started at '+clock(active.clock_in)+(paused?' \u00b7 paused at '+clock(active.paused_at):'');
+      var upd=function(){$('timer').textContent=hms(workedMs(active));};upd();
+      if(!paused)tick=setInterval(upd,1000);
     }else{
       $('onState').classList.add('hide');$('offState').classList.remove('hide');
     }
@@ -319,9 +332,10 @@
     var box=$('recent');
     if(!list.length){box.innerHTML='<div class="hint">No sessions yet.</div>';return;}
     box.innerHTML=list.map(function(s){
-      var h=round2((new Date(s.clock_out)-new Date(s.clock_in))/3600000);
+      var h=round2(workedMs(s)/3600000);
+      var br=Math.round((s.paused_ms||0)/60000);
       return '<div class="sess"><div><div>'+ymd(new Date(s.clock_in))+' &middot; '+
-        clock(s.clock_in)+' \u2013 '+clock(s.clock_out)+'</div>'+
+        clock(s.clock_in)+' \u2013 '+clock(s.clock_out)+(br?' <span class="hint">('+br+'m paused)</span>':'')+'</div>'+
         (s.description?'<div class="did">'+esc(s.description)+'</div>':'')+'</div>'+
         '<div class="mono" style="font-weight:600;white-space:nowrap">'+h+'h</div></div>';
     }).join('');
@@ -335,13 +349,30 @@
         active=r.data;renderClock();refresh();})
       .catch(function(){$('startBtn').disabled=false;$('mainErr').textContent='Network error. Try again.';});
   };
+  $('pauseBtn').onclick=function(){
+    if(!active)return;
+    var now=Date.now(),upd;
+    if(active.paused_at){ // resume: fold this pause into the running total
+      upd={paused_at:null,paused_ms:pausedMs(active,now)};
+    }else{
+      upd={paused_at:new Date(now).toISOString()};
+    }
+    $('pauseBtn').disabled=true;$('mainErr').textContent='';
+    sb.from('sessions').update(upd).eq('id',active.id).select().single()
+      .then(function(r){$('pauseBtn').disabled=false;
+        if(r.error){$('mainErr').textContent=r.error.message;return;}
+        active=r.data;renderClock();})
+      .catch(function(){$('pauseBtn').disabled=false;$('mainErr').textContent='Network error. Try again.';});
+  };
   $('stopBtn').onclick=function(){
     if($('didWrap').classList.contains('hide')){
       $('didWrap').classList.remove('hide');$('stopBtn').textContent='Save & clock out';$('didInp').focus();return;
     }
     if(!active)return;
     $('stopBtn').disabled=true;$('mainErr').textContent='';
-    sb.from('sessions').update({clock_out:new Date().toISOString(),description:$('didInp').value||''}).eq('id',active.id)
+    var now=Date.now(); // stopping while paused ends the pause at the same moment
+    sb.from('sessions').update({clock_out:new Date(now).toISOString(),description:$('didInp').value||'',
+      paused_at:null,paused_ms:pausedMs(active,now)}).eq('id',active.id)
       .then(function(r){$('stopBtn').disabled=false;
         if(r.error){$('mainErr').textContent=r.error.message;return;}
         $('didInp').value='';active=null;refresh();})
@@ -358,8 +389,8 @@
         rows.forEach(function(x){
           var name=(x.profiles&&x.profiles.full_name)||'\u2014';
           if(!by[name])by[name]={name:name,today:0,week:0};
-          if(!x.clock_out){live.push(name);return;}
-          var h=(new Date(x.clock_out)-new Date(x.clock_in))/3600000;
+          if(!x.clock_out){live.push(name+(x.paused_at?' (paused)':''));return;}
+          var h=workedMs(x)/3600000;
           if(ymd(new Date(x.clock_in))===today)by[name].today+=h;
           if(new Date(x.clock_in).getTime()>=ws)by[name].week+=h;
         });

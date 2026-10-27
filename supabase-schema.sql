@@ -16,8 +16,13 @@ create table if not exists public.sessions (
   clock_in timestamptz not null default now(),
   clock_out timestamptz,
   description text,
+  paused_ms bigint not null default 0,   -- total time paused (finished pauses), in milliseconds
+  paused_at timestamptz,                 -- set while the session is currently paused
   created_at timestamptz not null default now()
 );
+-- Pause/Resume columns (safe to re-run on an existing database)
+alter table public.sessions add column if not exists paused_ms bigint not null default 0;
+alter table public.sessions add column if not exists paused_at timestamptz;
 create index if not exists sessions_user_idx on public.sessions(user_id);
 create index if not exists sessions_clockin_idx on public.sessions(clock_in);
 

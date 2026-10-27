@@ -103,7 +103,7 @@
   function chrome(on){['month','exportBtn','signOut'].forEach(function(id){$(id).classList.toggle('hide',!on);});}
 
   function load(){
-    sb.from('sessions').select('clock_in,clock_out,profiles(full_name)').then(function(r){
+    sb.from('sessions').select('clock_in,clock_out,paused_ms,profiles(full_name)').then(function(r){
       if(r.error){show('login');$('loginErr').textContent=r.error.message;return;}
       months={};
       (r.data||[]).forEach(function(s){
@@ -113,7 +113,7 @@
         var label=d.toLocaleDateString(undefined,{month:'long',year:'numeric'});
         var wi=Math.min(4,Math.ceil(d.getDate()/7)-1);
         var name=(s.profiles&&s.profiles.full_name)||'Unknown';
-        var hrs=(new Date(s.clock_out)-d)/3600000;
+        var hrs=(new Date(s.clock_out)-d-(s.paused_ms||0))/3600000; // paused time doesn't count
         if(!months[key])months[key]={label:label,people:{}};
         if(!months[key].people[name])months[key].people[name]=[0,0,0,0,0];
         months[key].people[name][wi]+=hrs;
